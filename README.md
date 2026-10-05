@@ -1,8 +1,9 @@
-<h1 align="center" style="margin:0;">
-<img src="assets/banner.jpg" alt="Project banner" >
+<h1 align="center">
+<a href="https://gip-triad.github.io/mc-run-sheet/">
+  <img src="./assets/banner.jpg" alt="Project banner" title="Launch MC Run Sheet!">
+</a>
 </h1>
 <h3 align="center" style="margin: 0; margin-top: 0;">
-
 MC Run Sheet — because the professional MC was apparently unavailable
 </h3>
 
