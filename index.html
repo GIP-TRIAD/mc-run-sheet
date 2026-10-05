@@ -1,0 +1,1687 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MC Run Sheet</title>
+
+<!--
+  HOW TO EDIT
+  -----------
+  1. Default schedule: the flat list of <div class="row"> blocks inside <div id="seed"> below.
+       data-start / data-end  24h HH:MM (data-end is optional)  ->  drive the time column, the time pointer and the nesting
+       <div class="event">    the title
+       <div class="notes">    default notes for that row (HTML allowed: <b>, <i>, <ul>, <br>)
+     The displayed time text and the indentation / grouping are generated: a row whose time range fully contains
+     the following rows becomes a collapsible-by-hide "group" header and those rows are indented under it.
+     Row order does not matter; rows are sorted by start time (longer rows first when starts are equal).
+  2. On-screen changes (stored in this browser, they override the defaults above):
+       Schedule menu  ->  Edit schedule... (dialog, Save/Cancel), Import / Export CSV, Reset schedule to file
+       Notes menu     ->  notes are typed directly in the sheet; Export / Import Markdown, Reset notes to file
+     Times and titles are NOT editable in the sheet itself, only through the Schedule dialog or CSV import.
+     Once the schedule has been saved on screen, changes made to the rows below are ignored until you choose
+     "Reset schedule to file".
+  3. Notes are tied to a row's internal id, not to its time or title, so editing a row in the dialog keeps its notes.
+     Rows from this file get the id "title|start|end" as written below; avoid editing those three values in the file
+     after you have typed notes on screen, or export the notes first.
+  4. Browser storage: everything saved on screen (notes, edited schedule, sizes) lives in this browser under the id
+     STORE_ID (search for it in the script). Browsers share storage between ALL local .html files, so when you copy this
+     file for another event, change STORE_ID in the copy. The delay and the hidden-rows state expire after 12 hours.
+     Bulk changes (imports, resets, schedule save) can be undone once with  Schedule menu > Undo last bulk change.
+     If the browser blocks storage, a red banner says so; keep a copy with  Notes menu > Export notes (.md).
+  4b. Rehearsal: More menu > Rehearsal time..., or open the file with  ?now=14:32  at the end of its address. A purple banner
+     is shown while it is active; nothing about it is stored.
+  5. Hide-above buttons, maximize buttons, resize handles and the pointer are added by script.
+  6. Colors, default widths and font sizes are CSS variables at the top of the <style> block.
+-->
+
+<style>
+  :root {
+    --notes-size: 18px;      /* default notes font size (adjustable on screen) */
+    --w-time: 150px;         /* default column widths (draggable on screen) */
+    --w-event: 300px;
+    --gutter: 1.6rem;        /* left margin that holds the pointer arrow */
+
+    --bg: #ffffff;
+    --fg: #111111;
+    --muted: #666666;
+    --line: #cfd4da;
+    --group: #eaeff5;
+    --accent: #0b5fff;
+    --ptr: #e5262d;
+    color-scheme: light;
+  }
+  [data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #111418;
+    --fg: #ececec;
+    --muted: #9aa0a6;
+    --line: #2c333b;
+    --group: #1b222b;
+    --accent: #6ea2ff;
+    --ptr: #ff6b6b;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+  }
+
+  /* ---------- toolbar + column header (sticky) ---------- */
+  .top {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--bg);
+    border-bottom: 2px solid var(--line);
+  }
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: .4rem; align-items: center;
+    padding: .5rem .6rem;
+  }
+  .toolbar h1 { font-size: 1rem; margin: 0 auto 0 0; }
+  .toolbar button, #showbar, .fbar button, .menu > summary, .spanel button, .apanel button {
+    font: inherit; padding: .3rem .7rem; cursor: pointer;
+    background: var(--group); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .toolbar button:hover, #showbar:hover, .fbar button:hover, .menu > summary:hover, .spanel button:hover, .apanel button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  button:disabled:hover { border-color: var(--line); }
+  .toolbar .size { color: var(--muted); min-width: 3.2rem; text-align: center; font-variant-numeric: tabular-nums; }
+  .bar-hidden .toolbar { display: none; }
+  #showbar { display: none; position: fixed; top: 4px; right: 4px; z-index: 20; padding: .15rem .5rem; opacity: .6; }
+  .bar-hidden #showbar { display: block; }
+
+  /* schedule offset control */
+  .delay { display: inline-flex; align-items: center; gap: .25rem; }
+  .delay .dlabel { color: var(--muted); font-size: .85rem; margin-right: .1rem; }
+  .delay button { padding: .3rem .5rem; }
+  #offval { min-width: 7rem; }
+  #offval.set { border-color: var(--ptr); color: var(--ptr); font-weight: 600; }
+
+  /* dropdown menus (details/summary) */
+  .menu { position: relative; }
+  .menu > summary { list-style: none; }
+  .menu > summary::-webkit-details-marker { display: none; }
+  .menu .items {
+    position: absolute; right: 0; top: 100%; margin-top: 4px; z-index: 30;
+    display: flex; flex-direction: column; min-width: 13rem; padding: .25rem;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.2);
+  }
+  .menu .items button { border: 0; background: transparent; text-align: left; border-radius: 4px; }
+  .menu .items button:hover { background: var(--group); }
+
+  @media (max-width: 700px) {
+    .menu { position: static; }
+    .menu .items { left: .5rem; right: .5rem; min-width: 0; }
+  }
+
+  /* ---------- rows ---------- */
+  .row {
+    display: grid;
+    grid-template-columns: min(var(--w-time), 26vw) min(var(--w-event), 34vw) minmax(0, 1fr);
+    border-bottom: 1px solid var(--line);
+  }
+  .row > div { padding: .5rem .6rem; }
+  .row.head { margin-left: var(--gutter); font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .row.head > div { padding-top: .2rem; padding-bottom: .2rem; position: relative; }
+  .row.above { display: none; }
+
+  .time {
+    display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: .3rem;
+    font-variant-numeric: tabular-nums; color: var(--muted);
+  }
+  .row > .event {                              /* ".row > .event" so it outranks ".row > div" padding above */
+    font-weight: 600;
+    padding-left: calc(.6rem + var(--d, 0) * 1.3rem);
+  }
+  .group-head { background: var(--group); }
+
+  /* notes cell: editable body + maximize button */
+  .notes {
+    position: relative;
+    font-size: var(--notes-size);
+    line-height: 1.35;
+    border-left: 1px solid var(--line);
+    min-height: 2.2em;
+  }
+  .nbody { outline: none; min-height: 1.4em; padding-right: 2.2rem; border-radius: 3px; }
+  .nbody:focus { box-shadow: 0 0 0 2px var(--accent); }
+  .nbody:empty::before, .fbody:empty::before { content: "notes…"; color: var(--muted); opacity: .45; }
+  .nbody ul, .fbody ul { margin: .2em 0; padding-left: 1.2em; }
+  .nx {
+    position: absolute; top: .45rem; right: .4rem;
+    width: 1.7rem; height: 1.7rem; padding: 0; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg); color: var(--accent);
+    border: 1px solid var(--line); border-radius: 5px;
+  }
+  .nx:hover { border-color: var(--accent); }
+
+  /* hide-above button */
+  .cut {
+    font: inherit; font-size: .7rem; line-height: 1; flex: none;
+    width: 1.7rem; height: 1.7rem; padding: 0; cursor: pointer;
+    background: var(--bg); color: var(--accent);
+    border: 1px solid var(--line); border-radius: 5px;
+  }
+  .cut:hover { border-color: var(--accent); }
+
+  /* column resize handles (in header row) */
+  .grip { position: absolute; top: 0; bottom: 0; right: -6px; width: 12px; cursor: col-resize; z-index: 3; touch-action: none; }
+  .grip:hover::after, .grip.active::after { content: ""; position: absolute; left: 5px; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+
+  /* ---------- sheet, restore bar, time pointer ---------- */
+  #sheet { position: relative; margin-left: var(--gutter); }
+  #restore {
+    padding: .45rem .6rem; font-size: .9rem; cursor: pointer;
+    background: var(--group); color: var(--accent); border-bottom: 1px solid var(--line);
+  }
+  #restore[hidden] { display: none; }
+
+  #pointer {
+    position: absolute; left: calc(-1 * var(--gutter)); right: 0; top: 0; height: 0;
+    border-top: 2px solid var(--ptr);
+    pointer-events: none; z-index: 5;
+  }
+  #pointer .tri { position: absolute; left: 0; top: -.88rem; font-size: 1.1rem; line-height: 1.6; color: var(--ptr); }
+  #pointer .lbl {
+    position: absolute; right: .3rem; top: -1.4rem;
+    background: var(--ptr); color: #fff; font-size: .75rem; line-height: 1.2rem;
+    padding: 0 .4rem; border-radius: 3px; font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  #pointer.off { border-top-style: dashed; }   /* current slot is in the hidden part above */
+
+  .hint { padding: .6rem; color: var(--muted); font-size: .85rem; }
+
+  /* ---------- maximized notes overlay ---------- */
+  #focus {
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; flex-direction: column;
+    background: var(--bg); color: var(--fg);
+  }
+  #focus[hidden] { display: none; }
+  .fbar {
+    display: flex; flex-wrap: wrap; gap: .4rem; align-items: center;
+    padding: .5rem .8rem; background: var(--group); border-bottom: 2px solid var(--line);
+  }
+  .fhead { flex: 1 1 18rem; min-width: 12rem; }
+  .ftime { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: .6rem; }
+  .fname { font-weight: 700; font-size: 1.15rem; }
+  .fnow {
+    display: none; margin-left: .6rem; vertical-align: middle;
+    background: var(--ptr); color: #fff; font-size: .75rem; padding: .05rem .45rem; border-radius: 3px;
+  }
+  .fnow.on { display: inline-block; }
+  .fclock { color: var(--muted); font-variant-numeric: tabular-nums; font-size: .9rem; }
+  .fsz { color: var(--muted); min-width: 3.4rem; text-align: center; font-variant-numeric: tabular-nums; }
+  .fbody {
+    flex: 1; overflow: auto; outline: none;
+    padding: 1.2rem 1.6rem 2rem;
+    font-size: var(--focus-size, 40px); line-height: 1.35;
+  }
+  /* "what comes next" card: a footer row of the maximized view, aligned to the bottom right, so it never covers the notes */
+  .fnextcard {
+    flex: none; align-self: flex-end; margin: .4rem 1rem 1rem;
+    display: grid; grid-template-columns: auto 1fr; gap: .1rem .7rem; align-items: baseline;
+    width: min(30rem, calc(100vw - 2rem)); padding: .6rem .9rem; text-align: left;
+    font: inherit; font-size: 1rem; line-height: 1.3; cursor: pointer;
+    color: var(--fg); background: var(--group);
+    border: 1px solid var(--line); border-left: 6px solid var(--accent); border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.25);
+  }
+  .fnextcard:hover { border-color: var(--accent); }
+  .fnextcard:disabled { cursor: default; opacity: .85; }
+  .fnextcard .nlbl { grid-column: 1; font-size: .75rem; font-weight: 700; letter-spacing: .08em; color: var(--accent); }
+  .fnextcard .nin  { grid-column: 2; font-size: .85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .fnextcard .ntime { grid-column: 1; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .fnextcard .ntitle {
+    grid-column: 2; font-weight: 700; font-size: 1.1rem; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+  }
+  .fnextcard .nlbl, .fnextcard .nin { align-self: baseline; }
+
+  /* ---------- schedule edit dialog (explicit Save / Cancel; nothing is edited in the sheet itself) ---------- */
+  #sched {
+    position: fixed; inset: 0; z-index: 150;
+    display: flex; align-items: center; justify-content: center;
+    padding: 1rem; background: rgba(0,0,0,.55);
+  }
+  #sched[hidden] { display: none; }
+  .spanel {
+    display: flex; flex-direction: column; width: 100%; max-width: 64rem; max-height: 100%;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.4);
+  }
+  .spanel h2 { margin: 0; font-size: 1.1rem; }
+  .shead { padding: .8rem 1rem .2rem; }
+  .shint { padding: 0 1rem .6rem; color: var(--muted); font-size: .85rem; }
+  .scols, .srow {
+    display: grid; grid-template-columns: 2rem 6.5rem 6.5rem minmax(0, 1fr) 5.5rem;
+    gap: .5rem; align-items: center; padding: .25rem 1rem;
+  }
+  .scols { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
+  .slist { overflow: auto; flex: 1; padding: .3rem 0; min-height: 6rem; }
+  .sn { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+  .sin {
+    font: inherit; width: 100%; padding: .3rem .45rem; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 5px;
+  }
+  .sin:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .sin.bad { border-color: var(--ptr); box-shadow: 0 0 0 1px var(--ptr); }
+  .srow.del .sin { text-decoration: line-through; opacity: .5; }
+  .sfoot {
+    display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;
+    padding: .7rem 1rem; border-top: 1px solid var(--line);
+  }
+  .smsg { flex: 1; min-width: 10rem; color: var(--ptr); font-size: .9rem; }
+  .spanel button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  [data-theme="dark"] .spanel button.primary { color: #0b1020; }
+  @media (max-width: 640px) {
+    .scols { display: none; }
+    .srow { grid-template-columns: 1.5rem 1fr 1fr; }
+    .srow .s-title, .srow .sdel { grid-column: 2 / -1; }
+  }
+
+  /* ---------- in-page confirmation (replaces window.confirm, which is blocked in sandboxed previews) ---------- */
+  #ask {
+    position: fixed; inset: 0; z-index: 300;
+    display: flex; align-items: center; justify-content: center;
+    padding: 1rem; background: rgba(0,0,0,.6);
+  }
+  #ask[hidden] { display: none; }
+  .apanel {
+    width: 100%; max-width: 34rem; padding: 1rem 1.2rem;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+  .amsg { white-space: pre-line; line-height: 1.45; margin-bottom: 1rem; }
+  .abtns { display: flex; justify-content: flex-end; gap: .5rem; }
+  .apanel button.danger { background: var(--ptr); color: #fff; border-color: var(--ptr); }
+  [data-theme="dark"] .apanel button.danger { color: #1a0000; }
+
+  /* rehearsal mode */
+  #rehbar {
+    display: flex; flex-wrap: wrap; gap: .6rem; align-items: center;
+    padding: .35rem .8rem; background: #7a3dff; color: #fff; font-size: .9rem; font-weight: 600;
+  }
+  #rehbar[hidden] { display: none; }
+  #rehbar button { font: inherit; padding: .1rem .6rem; cursor: pointer; background: #fff; color: #4a1fb0; border: 0; border-radius: 5px; }
+  #reh {
+    position: fixed; inset: 0; z-index: 250;
+    display: flex; align-items: center; justify-content: center;
+    padding: 1rem; background: rgba(0,0,0,.6);
+  }
+  #reh[hidden] { display: none; }
+  .rehrow { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; margin: .8rem 0 .4rem; }
+  .rehrow .sin { width: 8rem; font-size: 1.2rem; text-align: center; }
+  .rehmsg { color: var(--ptr); min-height: 1.3em; font-size: .9rem; }
+  .apanel button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  [data-theme="dark"] .apanel button.primary { color: #0b1020; }
+
+  /* storage warning */
+  #warn { padding: .5rem .8rem; background: var(--ptr); color: #fff; font-size: .9rem; }
+  [data-theme="dark"] #warn { color: #1a0000; }
+  #warn[hidden] { display: none; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%); z-index: 400;
+    max-width: 90vw; padding: .5rem .9rem; border-radius: 6px; font-size: .9rem;
+    background: var(--fg); color: var(--bg); white-space: pre-line;
+  }
+  #toast[hidden] { display: none; }
+
+  /* ---------- print ---------- */
+  @page { size: A4 landscape; margin: 10mm; }
+  @media print {
+    :root { --bg: #fff; --fg: #000; --muted: #444; --line: #999; --group: #e9e9e9; --gutter: 0rem; color-scheme: light; }
+    body { font-size: 11pt; }
+    .top .toolbar, .hint, #pointer, #restore, .cut, .nx, .grip, #showbar, #focus, #sched, #ask, #reh, #rehbar, #warn, #toast { display: none !important; }
+    .top { position: static; border: 0; }
+    .row.above { display: grid; }                           /* print everything, including hidden rows */
+    .nbody:empty::before { content: ""; }
+    .nbody { padding-right: 0; }
+    .notes { min-height: 2.6em; }
+    .row, .group-head { break-inside: avoid; }
+    .group-head { break-after: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<button id="showbar" title="Show toolbar">☰</button>
+
+<div class="top">
+  <div id="warn" hidden role="alert"></div>
+  <div id="rehbar" hidden role="status">
+    <span id="rehtxt"></span>
+    <button type="button" id="rehstop">Stop rehearsal</button>
+  </div>
+  <div class="toolbar">
+    <h1>MC Run Sheet · Sample Event</h1>
+    <button data-act="smaller" title="Notes font smaller">A−</button>
+    <span class="size" id="size">18px</span>
+    <button data-act="bigger" title="Notes font larger">A+</button>
+    <span class="delay" title="Schedule offset: minutes behind (+) or ahead (−) of the schedule. Moves the time pointer.">
+      <span class="dlabel">Delay</span>
+      <button data-d="-5">−5</button>
+      <button data-d="-1">−1</button>
+      <button data-act="off-reset" id="offval" title="Click to reset to on time">On time</button>
+      <button data-d="1">+1</button>
+      <button data-d="5">+5</button>
+    </span>
+    <button data-act="now" title="Scroll to the time pointer">Go to now</button>
+    <button data-act="show-all" title="Show all rows hidden above">Show all</button>
+    <button data-act="fullscreen" id="fsbtn">Fullscreen</button>
+    <button data-act="hidebar" title="Hide this toolbar">Hide bar</button>
+    <details class="menu">
+      <summary>Schedule ▾</summary>
+      <div class="items">
+        <button data-act="sched-edit">Edit schedule…</button>
+        <button data-act="sched-import">Import schedule (.csv)…</button>
+        <button data-act="sched-export">Export schedule (.csv)</button>
+        <button data-act="sched-reset">Reset schedule to file</button>
+        <button data-act="undo" id="undobtn" disabled>Undo last bulk change</button>
+      </div>
+    </details>
+    <details class="menu">
+      <summary>Notes ▾</summary>
+      <div class="items">
+        <button data-act="export">Export notes (.md)</button>
+        <button data-act="import">Import notes (.md)…</button>
+        <button data-act="reset-notes">Reset notes to file</button>
+      </div>
+    </details>
+    <details class="menu">
+      <summary>More ▾</summary>
+      <div class="items">
+        <button data-act="rehearse">Rehearsal time…</button>
+        <button data-act="theme">Light / Dark</button>
+        <button data-act="print">Print</button>
+      </div>
+    </details>
+    <input type="file" id="mdfile" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden>
+    <input type="file" id="csvfile" accept=".csv,.txt,text/csv,text/plain" hidden>
+  </div>
+  <div class="row head"><div>Time</div><div>Event</div><div>Notes</div></div>
+</div>
+
+<main id="sheet">
+  <div id="restore" hidden></div>
+  <div id="pointer"><span class="tri">▶</span><span class="lbl"></span></div>
+  <!-- rows are generated here by script from the schedule below (or from the on-screen edited schedule) -->
+</main>
+
+<div class="hint">
+  <b>▲ button</b> (time column): hides every row above that row; the grey bar at the top restores them.
+  <b>Expand icon</b> (notes column): maximizes that row's notes.
+  <b>Red arrow/line</b>: schedule position now (use <b>Delay</b> when the event runs late or early).
+  Notes are editable in place. Times and titles are changed only from <b>Schedule ▾ → Edit schedule…</b>.
+  Drag the <b>column borders</b> in the header to resize.
+</div>
+
+<!-- ======================= DEFAULT SCHEDULE (see HOW TO EDIT) ======================= -->
+<div id="seed" hidden>
+
+  <div class="row" data-start="09:30">
+    <div class="event">Doors open</div>
+    <div class="notes">Music on, slides on the title screen.<br>Remind tech: <b>mics checked by 09:45</b>.</div>
+  </div>
+
+  <div class="row" data-start="10:00" data-end="12:00">
+    <div class="event">Morning session</div>
+    <div class="notes"></div>
+  </div>
+
+  <div class="row" data-start="10:00" data-end="10:10">
+    <div class="event">Welcome</div>
+    <div class="notes"><ul><li>Greet the room, house rules</li><li>Phones on silent</li><li>Introduce the day</li></ul></div>
+  </div>
+
+  <div class="row" data-start="10:10" data-end="10:25">
+    <div class="event">Greetings from partners</div>
+    <div class="notes"></div>
+  </div>
+
+  <div class="row" data-start="10:10" data-end="10:15">
+    <div class="event">Remarks by Dana Whitfield (Northwind)</div>
+    <div class="notes"><b>Dana Whitfield</b>, CEO, Northwind.<br>Hand her the clicker.</div>
+  </div>
+
+  <div class="row" data-start="10:15" data-end="10:20">
+    <div class="event">Remarks by Samir Okafor (Harbor Institute)</div>
+    <div class="notes">Pronounced <i>sah-MEER oh-KAH-for</i>.</div>
+  </div>
+
+  <div class="row" data-start="10:20" data-end="10:25">
+    <div class="event">Video message from the mayor</div>
+    <div class="notes">Video is on the left laptop.<br>Cue it <b>before</b> introducing.</div>
+  </div>
+
+  <div class="row" data-start="10:25" data-end="10:55">
+    <div class="event">Keynote: The Next Ten Years</div>
+    <div class="notes"><ul><li>Speaker: Priya Raman</li><li>Water on the lectern</li><li>Q&amp;A is <b>not</b> taken here</li></ul></div>
+  </div>
+
+  <div class="row" data-start="10:55" data-end="11:10">
+    <div class="event">Coffee break</div>
+    <div class="notes">Announce: back in <b>15 minutes</b>. Ring the bell at 11:08.</div>
+  </div>
+
+  <div class="row" data-start="11:10" data-end="11:50">
+    <div class="event">Panel discussion</div>
+    <div class="notes">Moderator: Lena Haas.<br>Four panelists, 2 min intros each.</div>
+  </div>
+
+  <div class="row" data-start="11:50" data-end="12:00">
+    <div class="event">Closing remarks</div>
+    <div class="notes">Thank sponsors, point to the lunch room.</div>
+  </div>
+
+  <div class="row" data-start="12:30">
+    <div class="event">Lunch</div>
+    <div class="notes"></div>
+  </div>
+
+</div>
+<!-- ===================== /DEFAULT SCHEDULE ===================== -->
+
+<!-- maximized notes -->
+<div id="focus" hidden>
+  <div class="fbar">
+    <button data-f="prev" id="fprev">‹ Prev</button>
+    <button data-f="next" id="fnext">Next ›</button>
+    <div class="fhead"><span class="ftime" id="ftime"></span><span class="fname" id="fname"></span><span class="fnow" id="fnow">● NOW</span></div>
+    <span class="fclock" id="fclock"></span>
+    <button data-f="smaller" title="Smaller text">A−</button>
+    <span class="fsz" id="fsz"></span>
+    <button data-f="bigger" title="Larger text">A+</button>
+    <button data-f="close" title="Close (Esc)">✕ Close</button>
+  </div>
+  <div class="fbody" id="fbody" contenteditable="true" spellcheck="false"></div>
+  <button type="button" class="fnextcard" id="fnextcard" data-f="next" title="Open the notes of the next row">
+    <span class="nlbl">NEXT</span><span class="nin" id="nxin"></span>
+    <span class="ntime" id="nxtime"></span><span class="ntitle" id="nxtitle"></span>
+  </button>
+</div>
+
+<!-- schedule edit dialog -->
+<div id="sched" hidden role="dialog" aria-modal="true" aria-labelledby="sched-title">
+  <div class="spanel">
+    <div class="shead"><h2 id="sched-title">Edit schedule</h2></div>
+    <div class="shint">
+      Times are 24h <b>HH:MM</b>; end is optional. Rows are sorted by start time when saved, and a row whose time range
+      contains the following rows becomes their group. Nothing changes until <b>Save schedule</b>. Notes stay attached to each row.
+    </div>
+    <div class="scols"><span></span><span>Start</span><span>End</span><span>Title</span><span></span></div>
+    <div class="slist" id="slist"></div>
+    <div class="sfoot">
+      <button type="button" data-s="add">+ Add row</button>
+      <span class="smsg" id="smsg" role="alert"></span>
+      <button type="button" data-s="cancel">Cancel</button>
+      <button type="button" data-s="save" class="primary">Save schedule</button>
+    </div>
+  </div>
+</div>
+
+<!-- in-page confirmation -->
+<div id="ask" hidden role="alertdialog" aria-modal="true" aria-labelledby="ask-msg">
+  <div class="apanel">
+    <div class="amsg" id="ask-msg"></div>
+    <div class="abtns">
+      <button type="button" id="ask-cancel">Cancel</button>
+      <button type="button" id="ask-ok" class="danger">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- rehearsal time dialog -->
+<div id="reh" hidden role="dialog" aria-modal="true" aria-labelledby="reh-title">
+  <div class="apanel">
+    <div class="amsg" id="reh-title"><b>Rehearsal mode</b>\nThe sheet behaves as if the clock showed this time, and then runs on in real time. Nothing is saved: closing or reloading the page returns to the real clock (unless the address contains <b>?now=HH:MM</b>).</div>
+    <div class="rehrow">
+      <label for="reh-in">Start at</label>
+      <input id="reh-in" class="sin" type="text" inputmode="numeric" placeholder="HH:MM" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="rehmsg" id="reh-msg" role="alert"></div>
+    <div class="abtns">
+      <button type="button" id="reh-cancel">Cancel</button>
+      <button type="button" id="reh-stop">Stop rehearsal</button>
+      <button type="button" id="reh-go" class="primary">Start rehearsal</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var sheet = document.getElementById("sheet");
+  var ptr = document.getElementById("pointer");
+  var bar = document.getElementById("restore");
+  var toastEl = document.getElementById("toast");
+  var rows = [], items = [], bodies = [], spans = [];
+
+  /* ---------- browser storage ----------
+     STORE_ID namespaces everything saved in the browser. Browsers (Chrome especially) share one storage area between
+     ALL local .html files (and, on GitHub Pages, between all your pages), so give every copy of this sheet its own STORE_ID. */
+  var STORE_ID = "mc-run-sheet";
+  var LEGACY_OK = false;
+  var P = "mc:" + STORE_ID + ":";
+  var warnEl = document.getElementById("warn");
+  var warnings = [];
+  function showWarn() { warnEl.textContent = warnings.join("  ·  "); warnEl.hidden = !warnings.length; }
+  function addWarn(msg) { if (warnings.indexOf(msg) < 0) { warnings.push(msg); showWarn(); } }
+  var STORAGE_MSG = "Browser storage is unavailable or full: notes and schedule edits will NOT survive a reload. Use Notes ▸ Export (.md) to keep a copy.";
+  var ls = {
+    get: function (k) {
+      try {
+        var v = localStorage.getItem(P + k);
+        if (v === null && LEGACY_OK) v = localStorage.getItem(k);
+        return v;
+      } catch (e) { return null; }
+    },
+    set: function (k, v) {
+      try { localStorage.setItem(P + k, v); return true; }
+      catch (e) { addWarn(STORAGE_MSG); return false; }
+    }
+  };
+  (function () {                                    /* probe once at start so the warning shows before anything is lost */
+    try { localStorage.setItem(P + "probe", "1"); localStorage.removeItem(P + "probe"); }
+    catch (e) { addWarn(STORAGE_MSG); }
+  })();
+  /* values that must not outlive the event (delay, hidden rows): stored with a timestamp, ignored after 12 hours */
+  var TTL = 12 * 3600 * 1000;
+  function getFresh(k) {
+    try { var o = JSON.parse(ls.get(k)); if (o && typeof o === "object" && Date.now() - o.t < TTL) return o.v; } catch (e) {}
+    return null;
+  }
+  function setFresh(k, v) { ls.set(k, JSON.stringify({ v: v, t: Date.now() })); }
+
+  /* ---------- in-page confirmation (native confirm() is silently blocked in sandboxed previews) ---------- */
+  var askEl = document.getElementById("ask"), askMsg = document.getElementById("ask-msg");
+  var askOk = document.getElementById("ask-ok"), askCancel = document.getElementById("ask-cancel");
+  var askCb = null;
+  function ask(msg, okLabel, cb) {
+    askMsg.textContent = msg;
+    askOk.textContent = okLabel || "OK";
+    askCb = cb;
+    askEl.hidden = false;                           /* keep as the last statement */
+    askCancel.focus();
+  }
+  function askDone(yes) {
+    var cb = askCb; askCb = null;
+    askEl.hidden = true;
+    if (yes && cb) cb();
+  }
+  askOk.addEventListener("click", function () { askDone(true); });
+  askCancel.addEventListener("click", function () { askDone(false); });
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function mins(s) { var p = s.split(":"); return (+p[0]) * 60 + (+p[1]); }
+  function fmt(m) { var t = Math.floor(m); t = ((t % 1440) + 1440) % 1440; return pad(Math.floor(t / 60)) + ":" + pad(t % 60); }
+  function normTitle(s) { return String(s).replace(/\s+/g, " ").trim(); }
+  function cmpKey(s) { return normTitle(s).toLowerCase(); }
+  function parseTime(s) {                     /* "H:MM", "HH:MM" or "HH:MM:SS" -> "HH:MM" (seconds dropped), else null */
+    var m = /^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/.exec(String(s));
+    if (!m) return null;
+    var h = +m[1], mi = +m[2], se = m[3] === undefined ? 0 : +m[3];
+    if (h > 23 || mi > 59 || se > 59) return null;
+    return pad(h) + ":" + pad(mi);
+  }
+
+  var toastT;
+  function toast(msg) {
+    toastEl.textContent = msg; toastEl.hidden = false;
+    clearTimeout(toastT);
+    toastT = setTimeout(function () { toastEl.hidden = true; }, 8000);
+  }
+
+  /* ---------- row text helpers (read from the rendered sheet) ---------- */
+  function timeText(r) {
+    var s = "";
+    Array.prototype.forEach.call(r.querySelector(".time").childNodes, function (n) { if (n.nodeType === 3) s += n.nodeValue; });
+    return s.replace(/\s+/g, " ").trim();
+  }
+  function titleText(r) { return r.querySelector(".event").textContent.replace(/\s+/g, " ").trim(); }
+
+  /* ---------- notes font size ---------- */
+  var size = parseInt(ls.get("mc-size"), 10) || 18;
+  function applySize() {
+    size = clamp(size, 10, 72);
+    root.style.setProperty("--notes-size", size + "px");
+    document.getElementById("size").textContent = size + "px";
+    ls.set("mc-size", size);
+    update();
+  }
+
+  /* ---------- theme ---------- */
+  if (ls.get("mc-theme") === "dark") root.setAttribute("data-theme", "dark");
+
+  /* ---------- schedule offset (positive = running late) ---------- */
+  var offset = parseInt(getFresh("mc-offset"), 10) || 0;
+  function offLabel() {
+    return offset === 0 ? "On time" : (offset > 0 ? "+" + offset + " min late" : (-offset) + " min early");
+  }
+  function applyOffset() {
+    offset = clamp(offset, -240, 240);
+    var b = document.getElementById("offval");
+    b.textContent = offLabel();
+    b.classList.toggle("set", offset !== 0);
+    setFresh("mc-offset", offset);
+    update();
+  }
+  /* rehearsal: a simulated clock that starts at a chosen time and then runs in real time */
+  var rehearsal = null;                           /* { base: minutes since midnight, t0: Date.now() at start } */
+  function nowDate() {
+    var d = new Date();
+    if (!rehearsal) return d;
+    var m = (rehearsal.base + (Date.now() - rehearsal.t0) / 60000) % 1440;
+    d.setHours(0, 0, 0, 0);
+    d.setTime(d.getTime() + Math.round(m * 60000));
+    return d;
+  }
+  function schedOf(d) { return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60 - offset; }
+
+  /* ---------- column widths ---------- */
+  var tW = 150, eW = 300;
+  try { var c = JSON.parse(ls.get("mc-cols")); if (c && c.t && c.e) { tW = c.t; eW = c.e; } } catch (e) {}
+  function applyCols() {
+    root.style.setProperty("--w-time", tW + "px");
+    root.style.setProperty("--w-event", eW + "px");
+  }
+  applyCols();
+
+  var head = document.querySelector(".row.head");
+  [["t", head.children[0]], ["e", head.children[1]]].forEach(function (p) {
+    var g = document.createElement("span");
+    g.className = "grip";
+    p[1].appendChild(g);
+    g.addEventListener("pointerdown", function (ev) {
+      ev.preventDefault();
+      g.setPointerCapture(ev.pointerId);
+      g.classList.add("active");
+      var hr = head.getBoundingClientRect();
+      function move(e) {
+        var x = e.clientX - hr.left;
+        if (p[0] === "t") tW = clamp(x, 100, hr.width - eW - 160);
+        else eW = clamp(x - tW, 120, hr.width - tW - 160);
+        applyCols();
+      }
+      function up() {
+        g.classList.remove("active");
+        g.removeEventListener("pointermove", move);
+        g.removeEventListener("pointerup", up);
+        ls.set("mc-cols", JSON.stringify({ t: tW, e: eW }));
+        update();
+      }
+      g.addEventListener("pointermove", move);
+      g.addEventListener("pointerup", up);
+    });
+  });
+
+  /* ======================= schedule model ======================= */
+  /* A model row: { id, start:"HH:MM", end:"HH:MM" | "", title }.  Notes are keyed by id. */
+  var idCounter = 0;
+  function newId() { return "n" + Date.now().toString(36) + (idCounter++).toString(36); }
+
+  var origNotes = {};                     /* default notes from the file, by id */
+  var seeds = [];
+  (function () {
+    var seen = {}, tmp = document.createElement("div");
+    Array.prototype.forEach.call(document.querySelectorAll("#seed .row"), function (r) {
+      var title = r.querySelector(".event").textContent.trim();
+      var s = r.dataset.start || "", e = r.dataset.end || "";
+      var id = title + "|" + s + "|" + e;                   /* same key format as earlier versions: stored notes stay valid */
+      if (seen[id]) { seen[id]++; id += "#" + seen[id]; } else seen[id] = 1;
+      var nt = r.querySelector(".notes");
+      tmp.innerHTML = nt ? nt.innerHTML.trim() : "";
+      origNotes[id] = tmp.innerHTML;
+      var ps = parseTime(s), pe = e ? parseTime(e) : "";
+      if (ps === null) { addWarn("The HTML file has a row with an invalid start time (\"" + s + "\"): \"" + normTitle(title) + "\". It is shown at 00:00."); ps = "00:00"; }
+      if (pe === null || (pe && mins(pe) <= mins(ps))) { addWarn("The HTML file has a row with an invalid end time (\"" + e + "\"): \"" + normTitle(title) + "\". The end time is ignored."); pe = ""; }
+      seeds.push({ id: id, start: ps, end: pe, title: normTitle(title) });
+    });
+  })();
+
+  function sortModel(list) {              /* by start; longer first when starts are equal; stable */
+    return list.map(function (r, i) {
+      var s = mins(r.start);
+      return { r: { id: r.id, start: r.start, end: r.end || "", title: r.title }, i: i, s: s, e: r.end ? mins(r.end) : s };
+    }).sort(function (a, b) { return a.s - b.s || b.e - a.e || a.i - b.i; }).map(function (x) { return x.r; });
+  }
+  function validRow(r) {
+    return r && typeof r.id === "string" && typeof r.title === "string" && parseTime(r.start) === r.start &&
+      (r.end === "" || r.end === undefined || (parseTime(r.end) === r.end && mins(r.end) > mins(r.start)));
+  }
+  function loadModel() {
+    var raw = ls.get("mc-sched");
+    if (raw) {
+      try {
+        var a = JSON.parse(raw), ids = {};
+        if (Array.isArray(a) && a.length && a.every(function (r) {
+          if (!validRow(r) || ids[r.id]) return false;
+          ids[r.id] = 1; return true;
+        })) return sortModel(a);
+        addWarn("The schedule saved in this browser is damaged and was ignored; the schedule from the HTML file is shown instead.");
+      } catch (e) {
+        addWarn("The schedule saved in this browser is damaged and was ignored; the schedule from the HTML file is shown instead.");
+      }
+    }
+    return sortModel(seeds);
+  }
+  var model = loadModel();
+
+  /* nesting is derived from time ranges: a row contains the rows that fall inside its range */
+  function contains(p, c) {
+    if (!p.end) return false;
+    var ps = mins(p.start), pe = mins(p.end), cs = mins(c.start);
+    if (!c.end) return cs >= ps && cs < pe;
+    var ce = mins(c.end);
+    return cs >= ps && ce <= pe && (cs > ps || ce < pe);
+  }
+  function buildTree(list) {
+    var roots = [], stack = [];
+    list.forEach(function (r) {
+      var n = { r: r, kids: [] };
+      while (stack.length && !contains(stack[stack.length - 1].r, r)) stack.pop();
+      (stack.length ? stack[stack.length - 1].kids : roots).push(n);
+      stack.push(n);
+    });
+    return roots;
+  }
+
+  /* ---------- notes storage ---------- */
+  var store = {};
+  try {
+    store = JSON.parse(ls.get("mc-notes") || "{}");
+    if (!store || typeof store !== "object" || Array.isArray(store)) throw new Error("bad");
+  } catch (e) { store = {}; addWarn("The notes saved in this browser could not be read and were ignored."); }
+  function saveStore() { ls.set("mc-notes", JSON.stringify(store)); }
+  function has(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+
+  /* keep only simple formatting when notes come from storage or an import (no scripts, handlers, images, styles) */
+  var ALLOWED = { B: 1, STRONG: 1, I: 1, EM: 1, U: 1, BR: 1, DIV: 1, P: 1, UL: 1, OL: 1, LI: 1 };
+  var DROP = /^(SCRIPT|STYLE|IFRAME|OBJECT|EMBED|NOSCRIPT|TEMPLATE|LINK|META|TEXTAREA|SELECT|SVG|MATH|IMG|VIDEO|AUDIO)$/;
+  function clean(html) {
+    var t = document.createElement("template");
+    t.innerHTML = String(html);
+    (function walk(node) {
+      Array.prototype.slice.call(node.childNodes).forEach(function (c) {
+        if (c.nodeType === 3) return;
+        if (c.nodeType !== 1) { node.removeChild(c); return; }
+        if (DROP.test(c.tagName)) { node.removeChild(c); return; }
+        walk(c);
+        if (ALLOWED[c.tagName]) {
+          while (c.attributes.length) c.removeAttribute(c.attributes[0].name);
+        } else {
+          while (c.firstChild) node.insertBefore(c.firstChild, c);
+          node.removeChild(c);
+        }
+      });
+    })(t.content);
+    return t.innerHTML;
+  }
+  function noteHtml(id) { return has(store, id) ? clean(store[id]) : (origNotes[id] || ""); }
+  function hasNotes(id) {
+    var t = document.createElement("div"); t.innerHTML = noteHtml(id);
+    return !!(t.textContent.trim() || t.querySelector("li"));
+  }
+  function commitNotes(i) {
+    var b = bodies[i];
+    if (!b.textContent.trim() && !b.querySelector("li")) b.innerHTML = "";
+    var id = rows[i].dataset.id, h = b.innerHTML;
+    if (h === (origNotes[id] || "")) delete store[id]; else store[id] = h;
+    saveStore();
+  }
+
+  /* ---------- rendering ---------- */
+  var ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
+  function makeRow(r, depth, isGroup) {
+    var el = document.createElement("div");
+    el.className = "row " + (isGroup ? "group-head" : "item");
+    el.dataset.id = r.id; el.dataset.start = r.start;
+    if (r.end) el.dataset.end = r.end;
+
+    var t = document.createElement("div"); t.className = "time";
+    t.appendChild(document.createTextNode(r.end ? r.start + "–" + r.end : r.start));
+    var cb = document.createElement("button");
+    cb.type = "button"; cb.className = "cut"; cb.textContent = "▲";
+    cb.title = "Hide everything above this row"; cb.setAttribute("aria-label", cb.title);
+    t.appendChild(cb);
+
+    var ev = document.createElement("div"); ev.className = "event";
+    ev.textContent = r.title;
+    if (depth) ev.setAttribute("style", "--d:" + depth);
+
+    var nt = document.createElement("div"); nt.className = "notes";
+    var body = document.createElement("div");
+    body.className = "nbody";
+    body.setAttribute("contenteditable", "true");
+    body.setAttribute("spellcheck", "false");
+    body.innerHTML = noteHtml(r.id);
+    nt.appendChild(body);
+    var nx = document.createElement("button");
+    nx.type = "button"; nx.className = "nx";
+    nx.title = "Maximize these notes"; nx.setAttribute("aria-label", nx.title);
+    nx.innerHTML = ICON;
+    nt.appendChild(nx);
+
+    el.appendChild(t); el.appendChild(ev); el.appendChild(nt);
+    return el;
+  }
+
+  var cutId = getFresh("mc-cut") || "";           /* id of the first visible row ("" = nothing hidden) */
+  var cut = 0;                                    /* its index */
+
+  function render() {
+    if (focusEl && !focusEl.hidden) closeFocus();
+    Array.prototype.slice.call(sheet.children).forEach(function (c) { if (c !== bar && c !== ptr) sheet.removeChild(c); });
+    (function put(nodes, parent, depth) {
+      nodes.forEach(function (n) {
+        if (n.kids.length) {
+          var sec = document.createElement("section"); sec.className = "group";
+          sec.appendChild(makeRow(n.r, depth, true));
+          var ch = document.createElement("div"); ch.className = "children";
+          put(n.kids, ch, depth + 1);
+          sec.appendChild(ch);
+          parent.appendChild(sec);
+        } else parent.appendChild(makeRow(n.r, depth, false));
+      });
+    })(buildTree(model), sheet, 0);
+
+    rows = Array.prototype.slice.call(sheet.querySelectorAll(".row"));
+    items = Array.prototype.slice.call(sheet.querySelectorAll(".row.item"));
+    bodies = rows.map(function (r) { return r.querySelector(".nbody"); });
+    spans = items.map(function (r, i) {
+      var s = mins(r.dataset.start), e;
+      if (r.dataset.end) e = mins(r.dataset.end);
+      else {
+        var nx = items[i + 1];
+        e = (nx && mins(nx.dataset.start) > s) ? mins(nx.dataset.start) : s + 30;
+      }
+      return { s: s, e: e };
+    });
+    applyCut();
+  }
+
+  /* ---------- hide everything above a row ---------- */
+  function applyCut() {
+    cut = 0;
+    if (cutId) {
+      for (var i = 1; i < rows.length; i++) if (rows[i].dataset.id === cutId) { cut = i; break; }
+      if (!cut) cutId = "";
+    }
+    rows.forEach(function (r, i) {
+      r.classList.toggle("above", i < cut);
+      r.querySelector(".cut").style.visibility = (i === cut) ? "hidden" : "";
+    });
+    bar.hidden = (cut === 0);
+    bar.textContent = "▲ " + cut + " row" + (cut === 1 ? "" : "s") + " hidden above — click to show all";
+    setFresh("mc-cut", cutId);
+    update();
+  }
+
+  /* ---------- notes: editing, paste, autosave ---------- */
+  sheet.addEventListener("input", function (e) {
+    var b = e.target.closest ? e.target.closest(".nbody") : null;
+    if (b) commitNotes(bodies.indexOf(b));
+  });
+  function onPaste(e) {                           /* paste as plain text only */
+    if (!(e.target.closest && e.target.closest("[contenteditable]"))) return;
+    e.preventDefault();
+    var t = (e.clipboardData || window.clipboardData).getData("text/plain");
+    document.execCommand("insertText", false, t);
+  }
+  sheet.addEventListener("paste", onPaste);
+  function onDrop(e) {                            /* dropped content (text, links, images) is inserted as plain text only */
+    if (!(e.target.closest && e.target.closest("[contenteditable]"))) return;
+    e.preventDefault();
+    var t = e.dataTransfer ? e.dataTransfer.getData("text/plain") : "";
+    if (t) document.execCommand("insertText", false, t);
+  }
+  sheet.addEventListener("drop", onDrop);
+
+  /* ---------- Markdown conversion (bold, italic, bullets, line breaks) ---------- */
+  function collapseWs(s) { return s.replace(/\u00a0/g, " ").replace(/\s+/g, " "); }
+  function mark(inner, m) {
+    return inner.split("\n").map(function (p) {
+      var t = p.trim(); if (!t) return p;
+      return p.match(/^\s*/)[0] + m + t + m + p.match(/\s*$/)[0];
+    }).join("\n");
+  }
+  function inlineChildren(n) { var s = ""; for (var c = n.firstChild; c; c = c.nextSibling) s += inlineNode(c); return s; }
+  function inlineNode(c) {
+    if (c.nodeType === 3) return collapseWs(c.nodeValue).replace(/([\\*])/g, "\\$1");
+    if (c.nodeType !== 1) return "";
+    var t = c.tagName;
+    if (t === "BR") return "\n";
+    if (t === "B" || t === "STRONG") return mark(inlineChildren(c), "**");
+    if (t === "I" || t === "EM") return mark(inlineChildren(c), "*");
+    if (/^(DIV|P|LI|UL|OL)$/.test(t)) return "\n" + inlineChildren(c) + "\n";
+    return inlineChildren(c);
+  }
+  function trimBlank(a) {
+    while (a.length && !a[0]) a.shift();
+    while (a.length && !a[a.length - 1]) a.pop();
+    return a;
+  }
+  function escLead(l) { return /^([-+]|\d+[.)])\s/.test(l) ? "\\" + l : l; }      /* plain text that looks like a list marker */
+  function htmlToMd(rootEl) {
+    var lines = [];
+    function run(parent, out) {
+      var buf = null;
+      function add(s) {
+        if (buf === null && !/\S/.test(s) && s.indexOf("\n") < 0) return;
+        buf = (buf === null ? "" : buf) + s;
+      }
+      function flush() {
+        if (buf === null) return;
+        buf.replace(/\n$/, "").split("\n").forEach(function (l) { out.push(escLead(l.trim())); });
+        buf = null;
+      }
+      for (var c = parent.firstChild; c; c = c.nextSibling) {
+        if (c.nodeType === 1 && /^(DIV|P)$/.test(c.tagName)) { flush(); run(c, out); }
+        else if (c.nodeType === 1 && /^(UL|OL)$/.test(c.tagName)) {
+          flush();
+          var n = 0;
+          for (var li = c.firstChild; li; li = li.nextSibling) {
+            if (li.nodeType !== 1 || li.tagName !== "LI") continue;
+            n++;
+            var sub = []; run(li, sub); trimBlank(sub);
+            out.push((c.tagName === "OL" ? n + ". " : "- ") + (sub[0] || ""));
+            for (var j = 1; j < sub.length; j++) out.push("  " + sub[j]);
+          }
+        }
+        else add(inlineNode(c));
+      }
+      flush();
+    }
+    run(rootEl, lines);
+    trimBlank(lines);
+    return lines.map(function (l) { return /^#/.test(l) ? "\\" + l : l; }).join("\n");
+  }
+
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function inlineHtml(s) {
+    s = esc(s);
+    var lit = [];
+    s = s.replace(/\\([\\*#+\-0-9])/g, function (_, ch) { lit.push(ch); return "\uE000" + (lit.length - 1) + "\uE001"; });
+    s = s.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+    s = s.replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\*)/g, "$1<i>$2</i>");
+    return s.replace(/\uE000(\d+)\uE001/g, function (_, i) { return lit[+i]; });
+  }
+  function mdToHtml(md) {
+    var L = md.replace(/\r\n?/g, "\n").split("\n");
+    while (L.length && !L[0].trim()) L.shift();
+    while (L.length && !L[L.length - 1].trim()) L.pop();
+    var out = "", prevText = false, list = null;
+    function closeList() { if (list) { out += "</" + list + ">"; list = null; } }
+    L.forEach(function (l) {
+      var m = l.match(/^\s*[-*+]\s+(.*)$/);
+      var o = !m && l.match(/^\s*\d+[.)]\s+(.*)$/);
+      if (m || o) {
+        var type = m ? "ul" : "ol";
+        if (list !== type) { closeList(); out = out.replace(/<br>$/, ""); out += "<" + type + ">"; list = type; }
+        out += "<li>" + inlineHtml((m || o)[1]) + "</li>";
+        prevText = false;
+        return;
+      }
+      closeList();
+      if (!l.trim()) { if (prevText) out += "<br>"; return; }
+      out += (prevText ? "<br>" : "") + inlineHtml(l.trim());
+      prevText = true;
+    });
+    closeList();
+    return out;
+  }
+
+  /* ---------- downloads ---------- */
+  function download(text, name, mime) {
+    var blob = new Blob([text], { type: mime || "text/markdown;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 4000);
+  }
+  function stamp() { var d = new Date(); return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()); }
+
+  /* read a chosen file as text: UTF-8 (BOM removed); if that is not valid UTF-8, Shift_JIS (Japanese Excel's default CSV encoding) */
+  function readTextFile(file, cb) {
+    var rd = new FileReader();
+    rd.onerror = function () { toast("The file could not be read. Nothing changed."); };
+    if (!window.TextDecoder) {
+      rd.onload = function () { cb(String(rd.result), {}); };
+      rd.readAsText(file, "utf-8");
+      return;
+    }
+    rd.onload = function () {
+      var text, info = {};
+      try { text = new TextDecoder("utf-8", { fatal: true }).decode(rd.result); }
+      catch (e) {
+        try { text = new TextDecoder("shift_jis").decode(rd.result); info.sjis = true; }
+        catch (e2) { text = new TextDecoder("utf-8").decode(rd.result); }
+      }
+      cb(text, info);
+    };
+    rd.readAsArrayBuffer(file);
+  }
+
+  /* ---------- notes export / import (Markdown) ---------- */
+  function exportMd() {
+    var title = document.querySelector(".toolbar h1").textContent.trim();
+    var L = [
+      "# " + title + " — notes", "",
+      "<!-- Notes export. Each \"## time — title\" heading identifies a schedule row; keep headings unchanged to re-import. " +
+      "Supported formatting: **bold**, *italic*, \"- \" bullets, blank lines. -->", ""
+    ];
+    rows.forEach(function (r, i) {
+      L.push("## " + timeText(r) + " — " + titleText(r), "");
+      var md = htmlToMd(bodies[i]);
+      if (md) L.push(md, "");
+    });
+    download(L.join("\n"), "mc_notes_" + stamp() + ".md");
+    toast("Notes exported (" + rows.length + " rows).");
+  }
+
+  function parseMd(text) {
+    var secs = [], cur = null;
+    text.replace(/\r\n?/g, "\n").split("\n").forEach(function (l) {
+      var m = l.match(/^##\s+(.+?)\s+—\s+(.+?)\s*$/);
+      if (m) { cur = { time: m[1], title: m[2], body: [] }; secs.push(cur); }
+      else if (cur) cur.body.push(l);
+    });
+    return secs;
+  }
+  function norm(s) { return s.replace(/\s+/g, " ").trim().toLowerCase(); }
+  function importMd(text, info) {
+    var secs = parseMd(text);
+    var byFull = {}, byTitle = {};
+    rows.forEach(function (r, i) {
+      var f = norm(timeText(r) + "|" + titleText(r)), t = norm(titleText(r));
+      if (!(f in byFull)) byFull[f] = i;
+      if (!(t in byTitle)) byTitle[t] = i;
+    });
+    var plan = [], unmatched = [];
+    secs.forEach(function (s) {
+      var f = norm(s.time + "|" + s.title), t = norm(s.title);
+      var idx = (f in byFull) ? byFull[f] : ((t in byTitle) ? byTitle[t] : -1);
+      if (idx < 0) unmatched.push(s.title); else plan.push({ i: idx, s: s });
+    });
+    if (!plan.length) { toast("Import: no matching \"## time — title\" headings found. Nothing changed."); return; }
+    var overwritten = plan.filter(function (p) { return hasNotes(rows[p.i].dataset.id); }).length;
+    ask("Replace the notes of " + plan.length + " row(s) with the content of the imported file?" +
+      (overwritten ? "\n" + overwritten + " of them currently have notes, which will be overwritten (a row with an empty section in the file ends up empty)." : "") +
+      (info && info.sjis ? "\nThe file is not UTF-8; it was read as Shift_JIS." : ""),
+      "Replace notes", function () {
+        snapshotForUndo("notes import");
+        plan.forEach(function (p) {
+          bodies[p.i].innerHTML = mdToHtml(p.s.body.join("\n"));
+          commitNotes(p.i);
+        });
+        toast("Import: " + plan.length + " row(s) updated" +
+          (unmatched.length ? ", " + unmatched.length + " heading(s) not matched (e.g. \"" + unmatched[0] + "\")." : "."));
+      });
+  }
+  var mdfile = document.getElementById("mdfile");
+  mdfile.addEventListener("change", function () {
+    var f = this.files && this.files[0];
+    if (!f) return;
+    readTextFile(f, importMd);
+    this.value = "";
+  });
+  function resetNotes() {
+    ask("Discard all on-screen note edits and restore the notes written in the HTML file?", "Discard edits", function () {
+      snapshotForUndo("notes reset");
+      store = {}; saveStore();
+      bodies.forEach(function (b, i) { b.innerHTML = origNotes[rows[i].dataset.id] || ""; });
+      toast("Notes restored to the file content.");
+    });
+  }
+
+  /* ---------- one-level undo for bulk changes (imports, resets, schedule save) ---------- */
+  var undoBtn = document.getElementById("undobtn");
+  function undoSnap() { try { return JSON.parse(ls.get("mc-undo")); } catch (e) { return null; } }
+  function refreshUndo() {
+    var u = undoSnap();
+    undoBtn.disabled = !u;
+    undoBtn.textContent = u ? "Undo: " + u.label + " (" + pad(new Date(u.t).getHours()) + ":" + pad(new Date(u.t).getMinutes()) + ")" : "Undo last bulk change";
+  }
+  function snapshotForUndo(label) {
+    ls.set("mc-undo", JSON.stringify({ label: label, t: Date.now(), sched: ls.get("mc-sched") || "", notes: JSON.stringify(store) }));
+    refreshUndo();
+  }
+  function undoLast() {
+    var u = undoSnap();
+    if (!u) { toast("Nothing to undo."); return; }
+    ask("Undo \"" + u.label + "\"?\nThe schedule and all notes go back to how they were just before it. Anything changed since then is lost.", "Undo", function () {
+      ls.set("mc-sched", u.sched);
+      model = loadModel();
+      try { store = JSON.parse(u.notes) || {}; } catch (e) { store = {}; }
+      saveStore();
+      ls.set("mc-undo", "");
+      refreshUndo();
+      render();
+      toast("Restored the state from before \"" + u.label + "\".");
+    });
+  }
+
+  /* ======================= schedule: apply, CSV, dialog ======================= */
+  function commitModel(list, removedIds) {
+    model = sortModel(list);
+    ls.set("mc-sched", JSON.stringify(model));
+    removedIds.forEach(function (id) { delete store[id]; });
+    saveStore();
+    render();
+  }
+
+  /* ---------- CSV export / import (start_time,end_time,description) ---------- */
+  function csvCell(s) { return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+  function exportCsv() {
+    var L = ["start_time,end_time,description"];
+    model.forEach(function (r) { L.push(r.start + ":00," + (r.end ? r.end + ":00" : "") + "," + csvCell(r.title)); });
+    download("\uFEFF" + L.join("\n") + "\n", "mc_schedule_" + stamp() + ".csv", "text/csv;charset=utf-8");
+    toast("Schedule exported (" + model.length + " rows).");
+  }
+  function parseCsv(text) {
+    text = text.replace(/^\uFEFF/, "");
+    var first = "", ls_ = text.split(/\r?\n/);
+    for (var k = 0; k < ls_.length; k++) if (ls_[k].trim()) { first = ls_[k]; break; }
+    var cnt = { ",": 0, ";": 0, "\t": 0 };
+    first.replace(/[,;\t]/g, function (ch) { cnt[ch]++; return ch; });
+    var delim = cnt[";"] > cnt[","] && cnt[";"] >= cnt["\t"] ? ";" : (cnt["\t"] > cnt[","] ? "\t" : ",");
+    var out = [], row = [], cell = "", q = false, i, c;
+    for (i = 0; i < text.length; i++) {
+      c = text.charAt(i);
+      if (q) {
+        if (c === '"') { if (text.charAt(i + 1) === '"') { cell += '"'; i++; } else q = false; }
+        else cell += c;
+      } else if (c === '"') q = true;
+      else if (c === delim) { row.push(cell); cell = ""; }
+      else if (c === "\n" || c === "\r") {
+        if (c === "\r" && text.charAt(i + 1) === "\n") i++;
+        row.push(cell); cell = ""; out.push(row); row = [];
+      } else cell += c;
+    }
+    if (cell !== "" || row.length) { row.push(cell); out.push(row); }
+    return out.filter(function (r) { return r.some(function (x) { return x.trim() !== ""; }); });
+  }
+
+  /* pair imported rows with existing rows so their notes follow:
+     1) same title + same times, 2) same title (times changed), 3) same times (title changed) */
+  function matchRows(newRows) {
+    var used = {}, res = newRows.map(function (n) { return { n: n, m: null }; });
+    function pass(test) {
+      res.forEach(function (x) {
+        if (x.m) return;
+        for (var i = 0; i < model.length; i++) {
+          var p = model[i];
+          if (!used[p.id] && test(x.n, p)) { x.m = p; used[p.id] = 1; return; }
+        }
+      });
+    }
+    pass(function (n, p) { return n.start === p.start && n.end === p.end && cmpKey(n.title) === cmpKey(p.title); });
+    pass(function (n, p) { return cmpKey(n.title) === cmpKey(p.title); });
+    pass(function (n, p) { return n.start === p.start && n.end === p.end; });
+    return { res: res, used: used };
+  }
+
+  function importCsv(text, info) {
+    var recs = parseCsv(text);
+    if (!recs.length) { toast("Import: the file is empty. Nothing changed."); return; }
+    var si = 0, ei = 1, ti = 2, startAt = 0;
+    if (parseTime(recs[0][0]) === null) {                     /* first record is a header */
+      startAt = 1;
+      var h = recs[0].map(function (x) { return x.trim().toLowerCase(); }), a;
+      a = h.findIndex(function (x) { return /start/.test(x); }); if (a >= 0) si = a;
+      a = h.findIndex(function (x) { return /end/.test(x); }); if (a >= 0) ei = a;
+      a = h.findIndex(function (x) { return /desc|title|event|name|item/.test(x); }); if (a >= 0) ti = a;
+    }
+    var list = [], errs = [];
+    recs.slice(startAt).forEach(function (r, k) {
+      var n = k + startAt + 1, s = parseTime(r[si] || ""), eRaw = (r[ei] || "").trim(), e = eRaw ? parseTime(eRaw) : "";
+      var title = normTitle(r[ti] || "");
+      if (s === null) errs.push("row " + n + ": start time \"" + (r[si] || "") + "\" is not HH:MM");
+      else if (e === null) errs.push("row " + n + ": end time \"" + eRaw + "\" is not HH:MM");
+      else if (e && mins(e) <= mins(s)) errs.push("row " + n + ": end time is not after start time");
+      else if (!title) errs.push("row " + n + ": description is empty");
+      else list.push({ start: s, end: e, title: title });
+    });
+    if (errs.length) {
+      toast("Import aborted, nothing changed. " + errs.length + " problem(s); first: " + errs[0] + ".");
+      return;
+    }
+    if (!list.length) { toast("Import: no schedule rows found. Nothing changed."); return; }
+
+    var mt = matchRows(list), kept = 0, withNotes = 0, removedIds = [];
+    var out = mt.res.map(function (x) {
+      if (x.m) {
+        kept++;
+        return { id: x.m.id, start: x.n.start, end: x.n.end, title: cmpKey(x.m.title) === cmpKey(x.n.title) ? x.m.title : x.n.title };
+      }
+      return { id: newId(), start: x.n.start, end: x.n.end, title: x.n.title };
+    });
+    model.forEach(function (p) {
+      if (!mt.used[p.id]) { removedIds.push(p.id); if (hasNotes(p.id)) withNotes++; }
+    });
+    var msg = "Replace the whole schedule with the " + list.length + " row(s) from the file?\n" +
+      "• " + kept + " existing row(s) kept (their notes stay attached)\n" +
+      "• " + (list.length - kept) + " new row(s)\n" +
+      "• " + removedIds.length + " existing row(s) removed" + (withNotes ? " — " + withNotes + " of them have notes, which will be lost" : "") +
+      "\nFirst rows in the file: " + list.slice(0, 3).map(function (r) { return r.start + " " + r.title; }).join("  ·  ") +
+      (info && info.sjis ? "\nThe file is not UTF-8; it was read as Shift_JIS. Check that the text above looks right." : "");
+    ask(msg, "Replace schedule", function () {
+      snapshotForUndo("schedule import");
+      commitModel(out, removedIds);
+      toast("Schedule imported: " + list.length + " rows (" + kept + " kept, " + (list.length - kept) + " new, " + removedIds.length + " removed).");
+    });
+  }
+  var csvfile = document.getElementById("csvfile");
+  csvfile.addEventListener("change", function () {
+    var f = this.files && this.files[0];
+    if (!f) return;
+    readTextFile(f, importCsv);
+    this.value = "";
+  });
+
+  function resetSchedule() {
+    ask("Discard the on-screen schedule and restore the schedule written in the HTML file?\nNotes of rows that exist only on screen will be lost.", "Restore from file", function () {
+      snapshotForUndo("schedule reset");
+      ls.set("mc-sched", "");
+      model = sortModel(seeds);
+      var ids = {}; model.forEach(function (r) { ids[r.id] = 1; });
+      Object.keys(store).forEach(function (k) { if (!ids[k]) delete store[k]; });
+      saveStore();
+      render();
+      toast("Schedule restored to the file content.");
+    });
+  }
+
+  /* ---------- edit dialog (working copy; applied only on Save) ---------- */
+  var schedEl = document.getElementById("sched");
+  var slist = document.getElementById("slist");
+  var smsg = document.getElementById("smsg");
+  var draft = [], inputs = [], snapshot = "";
+
+  function mkInput(cls, d, key, ph, label) {
+    var inp = document.createElement("input");
+    inp.type = "text"; inp.className = "sin " + cls; inp.value = d[key]; inp.placeholder = ph;
+    inp.disabled = d.del; inp.autocomplete = "off"; inp.spellcheck = false;
+    inp.setAttribute("aria-label", label);
+    inp.addEventListener("input", function () { d[key] = inp.value; inp.classList.remove("bad"); smsg.textContent = ""; });
+    return inp;
+  }
+  function renderDraft() {
+    slist.innerHTML = "";
+    inputs = [];
+    draft.forEach(function (d, i) {
+      var row = document.createElement("div"); row.className = "srow" + (d.del ? " del" : "");
+      var n = document.createElement("span"); n.className = "sn"; n.textContent = i + 1;
+      var s = mkInput("s-start", d, "start", "HH:MM", "Start time, row " + (i + 1));
+      var e = mkInput("s-end", d, "end", "HH:MM", "End time, row " + (i + 1));
+      var t = mkInput("s-title", d, "title", "Title", "Title, row " + (i + 1));
+      var del = document.createElement("button"); del.type = "button"; del.className = "sdel";
+      del.textContent = d.del ? "Undo" : "Delete";
+      del.addEventListener("click", function () {
+        d.del = !d.del;
+        row.classList.toggle("del", d.del);
+        s.disabled = e.disabled = t.disabled = d.del;
+        del.textContent = d.del ? "Undo" : "Delete";
+        smsg.textContent = "";
+      });
+      row.appendChild(n); row.appendChild(s); row.appendChild(e); row.appendChild(t); row.appendChild(del);
+      slist.appendChild(row);
+      inputs.push({ s: s, e: e, t: t });
+    });
+  }
+  function openSched() {
+    draft = model.map(function (r) { return { id: r.id, start: r.start, end: r.end, title: r.title, del: false, isNew: false }; });
+    snapshot = JSON.stringify(draft);
+    smsg.textContent = "";
+    renderDraft();
+    schedEl.hidden = false;
+    document.body.style.overflow = "hidden";
+    slist.scrollTop = 0;
+  }
+  function closeSched() {
+    schedEl.hidden = true;
+    document.body.style.overflow = "";
+    draft = []; inputs = [];
+  }
+  function cancelSched() {
+    if (JSON.stringify(draft) === snapshot) { closeSched(); return; }
+    ask("Discard your changes to the schedule?", "Discard changes", closeSched);
+  }
+  function addDraftRow() {
+    draft.push({ id: newId(), start: "", end: "", title: "", del: false, isNew: true });
+    smsg.textContent = "";
+    renderDraft();
+    slist.scrollTop = slist.scrollHeight;
+    inputs[inputs.length - 1].s.focus();
+  }
+  function saveSched() {
+    var list = [], err = "", firstBad = null;
+    inputs.forEach(function (x) { x.s.classList.remove("bad"); x.e.classList.remove("bad"); x.t.classList.remove("bad"); });
+    draft.forEach(function (d, i) {
+      if (d.del) return;
+      var x = inputs[i], s = parseTime(d.start), e = d.end.trim() ? parseTime(d.end) : "";
+      var title = normTitle(d.title), msg = "";
+      if (s === null) { x.s.classList.add("bad"); msg = "start must be a time like 14:05"; }
+      else if (e === null) { x.e.classList.add("bad"); msg = "end must be a time like 14:25, or empty"; }
+      else if (e && mins(e) <= mins(s)) { x.e.classList.add("bad"); msg = "end must be after start"; }
+      if (!title) { x.t.classList.add("bad"); msg = msg || "title is required"; }
+      if (msg) {
+        if (!err) {
+          err = "Row " + (i + 1) + ": " + msg + ".";
+          firstBad = x.s.classList.contains("bad") ? x.s : (x.e.classList.contains("bad") ? x.e : x.t);
+        }
+        return;
+      }
+      list.push({ id: d.id, start: s, end: e, title: title });
+    });
+    if (err) { smsg.textContent = err; if (firstBad) firstBad.focus(); return; }
+    if (!list.length) { smsg.textContent = "At least one row is required."; return; }
+    var removed = draft.filter(function (d) { return d.del && !d.isNew; });
+    var withNotes = removed.filter(function (d) { return hasNotes(d.id); });
+    function apply() {
+      var n = list.length;
+      closeSched();
+      snapshotForUndo("schedule edit");
+      commitModel(list, removed.map(function (d) { return d.id; }));
+      toast("Schedule saved (" + n + " rows).");
+    }
+    if (withNotes.length) {
+      ask("Delete " + removed.length + " row(s)? " + withNotes.length + " of them contain notes, which will be lost.", "Delete and save", apply);
+    } else apply();
+  }
+  schedEl.addEventListener("click", function (e) {
+    var b = e.target.closest("button[data-s]"); if (!b) return;       /* clicks on the backdrop do nothing on purpose */
+    switch (b.dataset.s) {
+      case "add": addDraftRow(); break;
+      case "cancel": cancelSched(); break;
+      case "save": saveSched(); break;
+    }
+  });
+
+  /* ---------- time pointer ---------- */
+  /* returns {i: item index, f: 0..1 position inside that item} */
+  function locate(n) {
+    if (!spans.length) return null;
+    if (n < spans[0].s) return { i: 0, f: 0 };
+    var k, last = -1;
+    for (k = 0; k < spans.length; k++) {
+      if (n >= spans[k].s && n < spans[k].e) return { i: k, f: (n - spans[k].s) / (spans[k].e - spans[k].s) };
+      if (spans[k].e <= n) last = k;
+    }
+    return { i: Math.max(last, 0), f: 1 };       /* gap between items, or after the last one: bottom edge of previous item */
+  }
+
+  function clockLabel(d, sched) {
+    var clock = pad(d.getHours()) + ":" + pad(d.getMinutes()) + (rehearsal ? " (rehearsal)" : "");
+    return offset === 0 ? clock : fmt(sched) + " · clock " + clock + " · " + offLabel();
+  }
+
+  function update() {
+    var d = nowDate(), n = schedOf(d);
+    var loc = locate(n);
+    if (!loc) { ptr.style.display = "none"; return; }
+    ptr.style.display = "";
+    var row = items[loc.i];
+    var hidden = row.classList.contains("above");
+    var sr = sheet.getBoundingClientRect(), y;
+    if (hidden) {
+      y = rows[cut].getBoundingClientRect().top - sr.top;
+    } else {
+      var rr = row.getBoundingClientRect();
+      y = rr.top - sr.top + loc.f * rr.height;
+    }
+    ptr.style.top = y + "px";
+    ptr.classList.toggle("off", hidden);
+    ptr.querySelector(".lbl").textContent = clockLabel(d, n) + (hidden ? " ▲ above" : "");
+    updateFocusMeta(d, n);
+  }
+
+  function goNow() {
+    var r = ptr.getBoundingClientRect();
+    window.scrollTo({ top: window.scrollY + r.top - window.innerHeight * 0.35, behavior: "smooth" });
+  }
+
+  /* ---------- maximized notes ---------- */
+  var focusEl = document.getElementById("focus");
+  var fbody = document.getElementById("fbody");
+  var fnow = document.getElementById("fnow");
+  var fidx = -1;
+  var fsz = parseInt(ls.get("mc-fsize"), 10) || 40;
+
+  function applyFsize() {
+    fsz = clamp(fsz, 16, 160);
+    focusEl.style.setProperty("--focus-size", fsz + "px");
+    document.getElementById("fsz").textContent = fsz + "px";
+    ls.set("mc-fsize", fsz);
+  }
+  function visibleRows() { return rows.filter(function (r) { return !r.classList.contains("above"); }); }
+  function rowSpan(r) {
+    var k = items.indexOf(r);
+    if (k >= 0) return spans[k];
+    if (r.dataset.start && r.dataset.end) return { s: mins(r.dataset.start), e: mins(r.dataset.end) };
+    return null;
+  }
+  function untilLabel(diff) {                    /* diff: minutes from now (schedule time) until the next row starts */
+    var m = Math.round(diff);
+    if (m === 0) return "starts now";
+    if (m > 0) return "in " + (m >= 60 ? Math.floor(m / 60) + " h " + pad(m % 60) + " min" : m + " min");
+    m = -m;
+    return "was due " + (m >= 60 ? Math.floor(m / 60) + " h " + pad(m % 60) + " min" : m + " min") + " ago";
+  }
+  function updateNextCard(n) {
+    var card = document.getElementById("fnextcard"), nx = rows[fidx + 1];
+    if (!nx) {
+      card.disabled = true;
+      card.title = "";
+      document.getElementById("nxtime").textContent = "";
+      document.getElementById("nxtitle").textContent = "End of the schedule";
+      document.getElementById("nxin").textContent = "";
+      return;
+    }
+    card.disabled = false;
+    card.title = "Open the notes of: " + titleText(nx);
+    document.getElementById("nxtime").textContent = timeText(nx);
+    document.getElementById("nxtitle").textContent = titleText(nx);
+    document.getElementById("nxin").textContent = untilLabel(mins(nx.dataset.start) - n);
+  }
+  function updateFocusMeta(d, n) {
+    if (focusEl.hidden || fidx < 0) return;
+    document.getElementById("fclock").textContent = clockLabel(d, n);
+    var sp = rowSpan(rows[fidx]);
+    fnow.classList.toggle("on", !!sp && n >= sp.s && n < sp.e);
+    updateNextCard(n);
+  }
+  function openFocus(i) {
+    fidx = i;
+    var r = rows[i];
+    document.getElementById("ftime").textContent = timeText(r);
+    document.getElementById("fname").textContent = titleText(r);
+    fbody.innerHTML = bodies[i].innerHTML;
+    focusEl.hidden = false;
+    document.body.style.overflow = "hidden";
+    fbody.scrollTop = 0;
+    applyFsize();
+    var vis = visibleRows(), pos = vis.indexOf(r);
+    document.getElementById("fprev").disabled = pos <= 0;
+    document.getElementById("fnext").disabled = pos < 0 || pos >= vis.length - 1;
+    var d = nowDate(); updateFocusMeta(d, schedOf(d));
+  }
+  function closeFocus() {
+    focusEl.hidden = true;
+    document.body.style.overflow = "";
+    fidx = -1;
+    update();
+  }
+  function stepFocus(dir) {
+    var vis = visibleRows(), pos = vis.indexOf(rows[fidx]), np = pos + dir;
+    if (pos < 0 || np < 0 || np >= vis.length) return;
+    openFocus(rows.indexOf(vis[np]));
+  }
+  fbody.addEventListener("input", function () {
+    if (fidx < 0) return;
+    bodies[fidx].innerHTML = fbody.innerHTML;
+    commitNotes(fidx);
+    if (bodies[fidx].innerHTML === "" && fbody.innerHTML !== "") fbody.innerHTML = "";
+  });
+  fbody.addEventListener("paste", onPaste);
+  focusEl.addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) return;
+    switch (b.dataset.f) {
+      case "prev": stepFocus(-1); break;
+      case "next": stepFocus(1); break;
+      case "smaller": fsz -= 4; applyFsize(); break;
+      case "bigger": fsz += 4; applyFsize(); break;
+      case "close": closeFocus(); break;
+    }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (!askEl.hidden) {
+      if (e.key === "Escape") { e.preventDefault(); askDone(false); }
+      return;
+    }
+    if (e.key === "Escape") {
+      var om = document.querySelector("details.menu[open]");
+      if (om) { om.removeAttribute("open"); return; }
+    }
+    if (!rehEl.hidden) {
+      if (e.key === "Escape") { e.preventDefault(); closeReh(); }
+      return;
+    }
+    if (!schedEl.hidden) {
+      if (e.key === "Escape") { e.preventDefault(); cancelSched(); }
+      return;
+    }
+    if (focusEl.hidden) return;
+    if (e.key === "Escape") { closeFocus(); return; }
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    var editing = document.activeElement === fbody;
+    if (e.altKey || !editing) { e.preventDefault(); stepFocus(e.key === "ArrowLeft" ? -1 : 1); }
+  });
+
+  /* ---------- rehearsal: banner, dialog, ?now=HH:MM ---------- */
+  var rehBar = document.getElementById("rehbar"), rehEl = document.getElementById("reh");
+  var rehIn = document.getElementById("reh-in"), rehMsg = document.getElementById("reh-msg");
+  function showRehBar() {
+    rehBar.hidden = !rehearsal;
+    if (rehearsal) document.getElementById("rehtxt").textContent = "REHEARSAL MODE — simulated clock, started at " + fmt(rehearsal.base) + ". Not the real time.";
+  }
+  function startRehearsal(str) {
+    var t = parseTime(str);
+    if (t === null) return false;
+    rehearsal = { base: mins(t), t0: Date.now() };
+    showRehBar(); update();
+    return true;
+  }
+  function stopRehearsal() {
+    rehearsal = null;
+    showRehBar(); update();
+    toast("Rehearsal stopped: the sheet uses the real clock again.");
+  }
+  function openReh() {
+    rehMsg.textContent = "";
+    rehIn.value = rehearsal ? fmt(rehearsal.base) : "";
+    document.getElementById("reh-stop").hidden = !rehearsal;
+    rehEl.hidden = false;
+    rehIn.focus(); rehIn.select();
+  }
+  function closeReh() { rehEl.hidden = true; }
+  function goReh() {
+    var v = rehIn.value.trim();
+    if (!/^\d{1,2}:\d{2}$/.test(v) || !startRehearsal(v)) { rehMsg.textContent = "Enter a time like 14:32."; rehIn.focus(); return; }
+    closeReh();
+    toast("Rehearsal started at " + fmt(rehearsal.base) + ".");
+  }
+  document.getElementById("reh-go").addEventListener("click", goReh);
+  document.getElementById("reh-cancel").addEventListener("click", closeReh);
+  document.getElementById("reh-stop").addEventListener("click", function () { closeReh(); stopRehearsal(); });
+  document.getElementById("rehstop").addEventListener("click", stopRehearsal);
+  rehIn.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); goReh(); } });
+  rehIn.addEventListener("input", function () { rehMsg.textContent = ""; });
+
+  /* ---------- sheet clicks (hide-above, restore, maximize) ---------- */
+  sheet.addEventListener("click", function (e) {
+    var cb = e.target.closest(".cut");
+    if (cb) { cutId = cb.closest(".row").dataset.id; applyCut(); return; }
+    var nb = e.target.closest(".nx");
+    if (nb) { openFocus(rows.indexOf(nb.closest(".row"))); return; }
+    if (e.target.closest("#restore")) { cutId = ""; applyCut(); }
+  });
+
+  /* ---------- toolbar ---------- */
+  var fsBtn = document.getElementById("fsbtn");
+  if (!root.requestFullscreen) fsBtn.style.display = "none";
+
+  document.querySelector(".toolbar").addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) return;
+    var menu = b.closest("details.menu");
+    if (menu) menu.removeAttribute("open");
+    if (b.dataset.d) { offset += parseInt(b.dataset.d, 10); applyOffset(); return; }
+    switch (b.dataset.act) {
+      case "smaller": size -= 2; applySize(); break;
+      case "bigger":  size += 2; applySize(); break;
+      case "off-reset": offset = 0; applyOffset(); break;
+      case "now": goNow(); break;
+      case "show-all": cutId = ""; applyCut(); break;
+      case "fullscreen":
+        if (document.fullscreenElement) document.exitFullscreen(); else root.requestFullscreen();
+        break;
+      case "hidebar": document.body.classList.add("bar-hidden"); update(); break;
+      case "sched-edit": openSched(); break;
+      case "sched-import": csvfile.click(); break;
+      case "sched-export": exportCsv(); break;
+      case "sched-reset": resetSchedule(); break;
+      case "undo": undoLast(); break;
+      case "rehearse": openReh(); break;
+      case "export": exportMd(); break;
+      case "import": mdfile.click(); break;
+      case "reset-notes": resetNotes(); break;
+      case "theme":
+        var dark = root.getAttribute("data-theme") === "dark";
+        if (dark) root.removeAttribute("data-theme"); else root.setAttribute("data-theme", "dark");
+        ls.set("mc-theme", dark ? "light" : "dark");
+        break;
+      case "print": window.print(); break;
+    }
+  });
+  document.addEventListener("click", function (e) {
+    Array.prototype.forEach.call(document.querySelectorAll("details.menu[open]"), function (d) {
+      if (!d.contains(e.target)) d.removeAttribute("open");
+    });
+  });
+  document.getElementById("showbar").addEventListener("click", function () {
+    document.body.classList.remove("bar-hidden"); update();
+  });
+
+  /* ---------- keep pointer aligned when layout changes ---------- */
+  if (window.ResizeObserver) new ResizeObserver(update).observe(sheet);
+  window.addEventListener("resize", update);
+  document.addEventListener("fullscreenchange", update);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) update(); });
+
+  (function () {
+    var m = /[?&]now=([^&#]*)/.exec(location.search || "");
+    if (!m) return;
+    var v = decodeURIComponent(m[1].replace(/\+/g, " ")).trim();
+    if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(v) && startRehearsal(v)) return;
+    addWarn("The address contains ?now=" + v + ", which is not a time like 14:32. The real clock is used.");
+  })();
+  render();
+  refreshUndo();
+  applySize();
+  applyOffset();
+  setInterval(update, 5000);
+})();
+</script>
+</body>
+</html>
